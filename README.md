@@ -7,6 +7,7 @@
 - **Hybrid Protocol Detection**: Automatically detects whether the incoming connection is an HTTP client or a Raw TCP client.
 - **Raw TCP Mode (0 Bytes Overhead)**: If a non-HTTP request is detected, it instantly returns the raw IP address and closes the socket. No HTTP headers are parsed or sent.
 - **Ultra-Minimal HTTP Mode (19 Bytes Overhead)**: If a `curl` or browser request (`GET` / `POST`) is detected, it responds with a stripped-down `HTTP/1.0 200 OK` header containing only the IP.
+- **4× Body Echo**: When an HTTP request includes a body (with `Content-Length`), the server echoes it back exactly 4 times its original size. Supports all HTTP methods (`POST`, `PUT`, `PATCH`, `DELETE`, etc.).
 - **Dependency-Free Arguments**: Argument parsing is done manually via `std::env` to completely avoid heavy dependencies like `clap`.
 - **Alpine / Docker Ready**: Fully static compilation target (`x86_64-unknown-linux-musl`) with LTO and binary stripping, resulting in a binary size of ~665 KB.
 - **Portable**: Compiled without hardware-locked CPU flags, making it safe to deploy on any legacy or modern x86_64 VPS architecture.
@@ -45,11 +46,22 @@ You can define a custom IP and port using the `--addr` argument:
 
 ## Testing
 
-**Testing Hybrid HTTP Mode:**
+**Testing IP Echo (no body):**
 ```bash
-curl -i http://127.0.0.1:8080
+curl http://127.0.0.1:8080
 ```
-*Output will show the minimal HTTP/1.0 header and your IP.*
+*Output will be your IPv4 address.*
+
+**Testing 4× Body Echo:**
+```bash
+curl -X POST http://127.0.0.1:8080 -d "hello"
+```
+*Output: `hellohellohellohello` (5 bytes × 4 = 20 bytes)*
+
+```bash
+curl -X PUT http://127.0.0.1:8080 -d "AB"
+```
+*Output: `ABABABAB` (2 bytes × 4 = 8 bytes)*
 
 **Testing Raw TCP Mode:**
 ```bash
