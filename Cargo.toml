@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1.32", features = ["rt-multi-thread", "net", "io-util", "macros"] }
+tokio = { version = "1.32", features = ["rt-multi-thread", "net", "io-util", "macros", "time"] }
 
 [profile.release]
 opt-level = 3
