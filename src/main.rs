@@ -1,7 +1,9 @@
+use socket2::{Domain, Socket, Type};
 use std::env;
+use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UdpSocket};
 
 /// Extract Content-Length from raw HTTP headers (case-insensitive, zero-alloc).
 fn parse_content_length(headers: &str) -> Option<usize> {
@@ -29,22 +31,42 @@ async fn echo_body_4x<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut addr = "[::]:8080".to_string();
-
-    // Manual argument parsing to avoid heavy dependencies like `clap`.
-    // This keeps the binary size extremely small (under 1 MB).
-    let args: Vec<String> = env::args().collect();
-    for i in 1..args.len() {
-        if args[i] == "--addr" && i + 1 < args.len() {
-            addr = args[i + 1].clone();
-            break;
+/// Handle UDP requests: respond with client IP regardless of payload
+async fn udp_echo_loop(socket: UdpSocket) {
+    let mut buf = [0u8; 64];
+    loop {
+        match socket.recv_from(&mut buf).await {
+            Ok((_n, peer_addr)) => {
+                let ip = peer_addr.ip().to_string();
+                let ip = ip.strip_prefix("::ffff:").unwrap_or(&ip);
+                let _ = socket.send_to(ip.as_bytes(), peer_addr).await;
+            }
+            Err(_) => continue,
         }
     }
+}
 
-    let listener = TcpListener::bind(&addr).await?;
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let addr = env::args()
+        .skip_while(|arg| arg != "--addr")
+        .nth(1)
+        .unwrap_or_else(|| "[::]:8080".to_string());
+
+    // Bind TCP and UDP on the same port
+    let addr_parsed: SocketAddr = addr.parse()?;
+    let socket = Socket::new(Domain::for_address(addr_parsed), Type::STREAM, None)?;
+    socket.set_reuse_address(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&addr_parsed.into())?;
+    socket.listen(4096)?; // Massive backlog to absorb the 300 connection spike
+    let std_listener: std::net::TcpListener = socket.into();
+    let listener = TcpListener::from_std(std_listener)?;
+    let udp_socket = UdpSocket::bind(&addr).await?;
     println!("🚀 Ultra-Fast Hybrid Echo Server running on {}", addr);
+
+    // Spawn UDP handler in background
+    tokio::spawn(udp_echo_loop(udp_socket));
 
     loop {
         let (socket, peer_addr) = match listener.accept().await {
