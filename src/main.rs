@@ -80,26 +80,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Per-connection hard timeout: kill task after 30s regardless
             let _ = tokio::time::timeout(Duration::from_secs(30), async {
-                let mut buf = [0u8; 1024]; // Stack buffer — no heap allocation
+                let mut buf: Vec<u8> = Vec::with_capacity(1024);
+                let mut chunk = [0u8; 1024];
 
                 // Read initial data with 10s timeout
-                let n = match tokio::time::timeout(Duration::from_secs(10), reader.read(&mut buf))
+                let n = match tokio::time::timeout(Duration::from_secs(10), reader.read(&mut chunk))
                     .await
                 {
                     Ok(Ok(n)) if n > 0 => n,
                     _ => return,
                 };
+                buf.extend_from_slice(&chunk[..n]);
 
-                let request = &buf[..n];
-
-                // Detect HTTP methods that may carry a body
-                let is_http = request.starts_with(b"GET")
-                    || request.starts_with(b"POST")
-                    || request.starts_with(b"PUT")
-                    || request.starts_with(b"PATCH")
-                    || request.starts_with(b"DELETE")
-                    || request.starts_with(b"HEAD")
-                    || request.starts_with(b"OPTIONS");
+                let is_http = buf.starts_with(b"GET")
+                    || buf.starts_with(b"POST")
+                    || buf.starts_with(b"PUT")
+                    || buf.starts_with(b"PATCH")
+                    || buf.starts_with(b"DELETE")
+                    || buf.starts_with(b"HEAD")
+                    || buf.starts_with(b"OPTIONS");
 
                 // Extract peer IP, stripping IPv4-mapped IPv6 prefix
                 let ip = peer_addr.ip().to_string();
@@ -107,13 +106,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if is_http {
                     // Find end of headers
-                    let hdr_end = request
-                        .windows(4)
-                        .position(|w| w == b"\r\n\r\n")
-                        .map(|p| p + 4);
+                    let mut hdr_end = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
+                    while hdr_end.is_none() && buf.len() < 8 * 1024 {
+                        let mut chunk = [0u8; 1024];
+                        let n = match tokio::time::timeout(
+                            Duration::from_secs(10),
+                            reader.read(&mut chunk),
+                        )
+                        .await
+                        {
+                            Ok(Ok(n)) if n > 0 => n,
+                            _ => return,
+                        };
+                        buf.extend_from_slice(&chunk[..n]);
+                        hdr_end = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4);
+                    }
 
                     if let Some(hdr_end) = hdr_end {
-                        let header_str = std::str::from_utf8(&request[..hdr_end]).unwrap_or("");
+                        let header_str = std::str::from_utf8(&buf[..hdr_end]).unwrap_or("");
                         let body_len = parse_content_length(header_str).unwrap_or(0);
 
                         if body_len == 0 {
@@ -125,11 +135,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             )
                             .await;
                         } else {
-                            let body_already_read = (n - hdr_end).min(body_len);
+                            let body_already_read = buf.len().saturating_sub(hdr_end).min(body_len);
 
                             // Accumulate full body: part already in buffer + remainder from socket
                             let mut body = Vec::with_capacity(body_len);
-                            body.extend_from_slice(&request[hdr_end..hdr_end + body_already_read]);
+                            body.extend_from_slice(&buf[hdr_end..hdr_end + body_already_read]);
 
                             let remaining = body_len - body_already_read;
                             if remaining > 0 {
